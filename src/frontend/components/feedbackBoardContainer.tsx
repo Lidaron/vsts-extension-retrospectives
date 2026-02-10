@@ -342,13 +342,18 @@ export const FeedbackBoardContainer = React.forwardRef<FeedbackBoardContainerHan
     }
 
     try {
-      const initializedTeamAndBoardState = await initializeFeedbackBoard();
-      initialCurrentTeam = initializedTeamAndBoardState.currentTeam;
-      initialCurrentBoard = initializedTeamAndBoardState.currentBoard;
+      const initializedUserTeams = await initializeUserTeams();
+      let userTeams = initializedUserTeams.userTeams;
+      let defaultTeam = initializedUserTeams.defaultTeam;
+      setState({ userTeams });
 
-      await initializeProjectTeams(initialCurrentTeam);
+      const initializedBoardState = await initializeFeedbackBoard(defaultTeam);
+      initialCurrentTeam = initializedBoardState.currentTeam;
+      initialCurrentBoard = initializedBoardState.currentBoard;
 
-      setState({ ...initializedTeamAndBoardState, isTeamDataLoaded: true });
+      await initializeProjectMembers(initialCurrentTeam);
+
+      setState({ ...initializedBoardState, isTeamDataLoaded: true });
     } catch (error) {
       appInsights.trackException(error, {
         action: "initializeTeamAndBoardState",
@@ -886,15 +891,28 @@ export const FeedbackBoardContainer = React.forwardRef<FeedbackBoardContainerHan
     [setState],
   );
 
-  /**
-   * @description Loads team data for this project and the current user. Attempts to use query
-   * params or user records to pre-select team and board, otherwise default to the first team
-   * the current user is a part of and most recently created board.
-   * @returns An object to update the state with initialized team and board data.
-   */
-  const initializeFeedbackBoard = async (): Promise<{
-    userTeams: WebApiTeam[];
-    filteredUserTeams: WebApiTeam[];
+    /**
+     * @description Fetches all teams the user is a member of in the project.
+     * @returns An object containing userTeams (sorted) and defaultTeam.
+     */
+    const initializeUserTeams = async () => {
+      const userTeams = await azureDevOpsCoreService.getAllTeams(props.projectId, true);
+      userTeams?.sort((t1, t2) => {
+        return t1.name.localeCompare(t2.name, [], { sensitivity: "accent" });
+      });
+
+      const defaultTeam = userTeams?.length ? userTeams[0] : await azureDevOpsCoreService.getDefaultTeam(props.projectId);
+
+      return { userTeams, defaultTeam };
+    };
+
+    /**
+     * @description Loads board data for this project and the current user. Attempts to use query
+     * params or user records to pre-select team and board, otherwise defaults to the provided
+     * default team and the most recently created board.
+     * @returns An object to update the state with initialized board data.
+     */
+  const initializeFeedbackBoard = async (defaultTeam: WebApiTeam): Promise<{
     currentTeam: WebApiTeam;
     boards: IFeedbackBoardDocument[];
     currentBoard: IFeedbackBoardDocument;
@@ -902,16 +920,7 @@ export const FeedbackBoardContainer = React.forwardRef<FeedbackBoardContainerHan
     teamBoardDeletedDialogTitle: string;
     teamBoardDeletedDialogMessage: string;
   }> => {
-    const userTeams = await azureDevOpsCoreService.getAllTeams(props.projectId, true);
-    userTeams?.sort((t1, t2) => {
-      return t1.name.localeCompare(t2.name, [], { sensitivity: "accent" });
-    });
-
-    const defaultTeam = userTeams?.length ? userTeams[0] : await azureDevOpsCoreService.getDefaultTeam(props.projectId);
-
-    const baseTeamState = {
-      userTeams,
-      filteredUserTeams: userTeams,
+    const baseBoardState = {
       currentTeam: defaultTeam,
       isTeamBoardDeletedInfoDialogHidden: true,
       teamBoardDeletedDialogTitle: "",
@@ -970,10 +979,10 @@ export const FeedbackBoardContainer = React.forwardRef<FeedbackBoardContainerHan
     if (!info?.teamId) {
       // If the teamId query param doesn't exist, attempt to pre-select a team and board by last
       // visited user records.
-      const recentVisitState = await loadRecentlyVisitedOrDefaultTeamAndBoardState(defaultTeam, userTeams);
+      const recentVisitState = await loadRecentlyVisitedOrDefaultTeamAndBoardState(defaultTeam, stateRef.current.userTeams);
 
       return {
-        ...baseTeamState,
+        ...baseBoardState,
         ...recentVisitState,
       };
     }
@@ -985,7 +994,7 @@ export const FeedbackBoardContainer = React.forwardRef<FeedbackBoardContainerHan
     if (!matchedTeam) {
       // If the teamId query param wasn't valid attempt to pre-select a team and board by last
       // visited user records.
-      const recentVisitState = await loadRecentlyVisitedOrDefaultTeamAndBoardState(defaultTeam, userTeams);
+      const recentVisitState = await loadRecentlyVisitedOrDefaultTeamAndBoardState(defaultTeam, stateRef.current.userTeams);
       const recentVisitWithDialogState = {
         ...recentVisitState,
         isTeamBoardDeletedInfoDialogHidden: false,
@@ -994,7 +1003,7 @@ export const FeedbackBoardContainer = React.forwardRef<FeedbackBoardContainerHan
       };
 
       return {
-        ...baseTeamState,
+        ...baseBoardState,
         ...recentVisitWithDialogState,
       };
     }
@@ -1013,7 +1022,7 @@ export const FeedbackBoardContainer = React.forwardRef<FeedbackBoardContainerHan
     }
 
     const queryParamTeamAndDefaultBoardState = {
-      ...baseTeamState,
+      ...baseBoardState,
       currentBoard: boardsForMatchedTeam.length ? boardsForMatchedTeam[0] : null,
       currentTeam: matchedTeam,
       boards: boardsForMatchedTeam,
@@ -1057,7 +1066,7 @@ export const FeedbackBoardContainer = React.forwardRef<FeedbackBoardContainerHan
     }
   };
 
-  const initializeProjectTeams = async (defaultTeam: WebApiTeam) => {
+  const initializeProjectMembers = async (defaultTeam: WebApiTeam) => {
     // true returns all teams that user is a member in the project
     // false returns all teams that are in project
     // intentionally restricting to teams the user is a member
